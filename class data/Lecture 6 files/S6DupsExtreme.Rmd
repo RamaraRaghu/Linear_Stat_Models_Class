@@ -1,0 +1,288 @@
+---
+pdf_document: default
+title: "Session 6:  Duplicates, Categorial Variable Relationships & Extreme Values"
+output: pdf_document
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+
+```{r "setup", include=FALSE}
+require("knitr")
+traindir <- "~/Google Drive/UVA/Courses/LinearStatisticalModels/Fall2018/Data/TrainData/new/"
+sourcedir <-"~/Google Drive/UVA/Courses/LinearStatisticalModels/Fall2018/Source/"
+opts_knit$set(root.dir = sourcedir)
+```
+
+#*******************************************************
+#			Load the data
+#********************************************************
+
+#load all of the accident data from 2001 to 2017
+```{r}
+source("AccidentInput.R")
+acts <- file.inputl(traindir)
+totacts <- combine.data(acts)
+```
+
+#***********************************************************
+#			Setup Categorical Variables
+#***********************************************************
+
+# Accident type as factor with new labels
+```{r}
+totacts$TYPE <- factor(totacts$TYPE, labels = c("Derailment", "HeadOn", "Rearend", "Side", "Raking", "BrokenTrain", "Hwy-Rail", "GradeX", "Obstruction", "Explosive", "Fire","Other","SeeNarrative" ))
+```
+
+# Fix Type of train and change to factor with new labels
+```{r}
+totacts$TYPEQ <- as.numeric(totacts$TYPEQ)
+
+totacts$TYPEQ <- factor(totacts$TYPEQ, labels = c("Freight", "Passenger", "Commuter", "Work",  "Single", "CutofCars", "Yard", "Light", "Maint"))
+```
+
+# Accident cause with new labels
+
+```{r}
+totacts$Cause <- rep(NA, nrow(totacts))
+
+totacts$Cause[which(substr(totacts$CAUSE, 1, 1) == "M")] <- "M"
+totacts$Cause[which(substr(totacts$CAUSE, 1, 1) == "T")] <- "T"
+totacts$Cause[which(substr(totacts$CAUSE, 1, 1) == "S")] <- "S"
+totacts$Cause[which(substr(totacts$CAUSE, 1, 1) == "H")] <- "H"
+totacts$Cause[which(substr(totacts$CAUSE, 1, 1) == "E")] <- "E"
+
+totacts$Cause <- factor(totacts$Cause)
+```
+
+
+#***********************************************************
+#			Extreme Points
+#***********************************************************
+
+```{r}
+
+```
+
+hist(totacts$ACCDMG)
+
+# Get the values in the box plot for ACCDMG
+
+```{r}
+dmgbox <- boxplot(totacts$ACCDMG)
+```
+
+
+
+# extreme points
+
+```{r}
+length(dmgbox$out)
+```
+
+
+
+# What proportion of accidents are extreme?
+
+```{r}
+length(dmgbox$out)/nrow(totacts)
+```
+
+# Proportion of costs
+
+```{r}
+sum(as.numeric(totacts$ACCDMG[which(totacts$ACCDMG > dmgbox$stats[5])]))/sum(as.numeric(totacts$ACCDMG))
+```
+
+# Create a data frame with just the extreme ACCDMG accidents
+
+```{r}
+xdmg <- totacts[totacts$ACCDMG > dmgbox$stats[5],]
+
+dim(xdmg)
+```
+
+
+
+# Look at the graphs of these extreme accidents
+
+```{r}
+hist(xdmg$ACCDMG)
+
+boxplot(xdmg$ACCDMG, col = "steelblue", main = "Accidents with Extreme Damage", ylab = "Cost ($)")
+
+plot(1:17, tapply(xdmg$ACCDMG, xdmg$YEAR, sum), type = "l", xlab = "Year", ylab = "Total Damage ($)", main = "Total Accident Damage per Year")
+```
+
+
+
+# also plot number of accidents per year.
+```{r}
+table(totacts$YEAR)
+barplot(table(totacts$YEAR))
+```
+
+
+
+# Frequency of accident types
+```{r}
+barplot(table(xdmg$TYPE))
+```
+
+# SPM of metrics
+
+# SPM of metrics & train variables
+
+```{r}
+source("SPM_Panel.R")
+uva.pairs(xdmg[,c("ACCDMG", "TOTKLD", "TOTINJ", "TRNSPD")])
+```
+
+# Categorical variables
+# Cause
+
+```{r}
+library("lattice")
+bwplot(Cause~ ACCDMG, main = "Box Plots of Accident Damage by Cause", xlab = "Damage ($)", ylab = "Accident Cause", data = xdmg)
+```
+
+
+
+#Extreme accidents
+```{r}
+which(totacts$ACCDMG > dmgbox$stats[5])
+```
+
+
+#Use of jitter
+
+```{r}
+bwplot(as.factor(YEAR)~jitter(ACCDMG, amount = 2.5e5), data = xdmg, main = "Box Plots of Extreme Accident Damage by Year (with jitter)", xlab = "Damage ($)", ylab = "Year")
+
+par(mfrow = c(1,2))
+boxplot(jitter(xdmg$ACCDMG, amount = 2.5e5), col = "steelblue", main = "Extreme Accident Damage with Jitter")
+boxplot(xdmg$ACCDMG, col = "steelblue", main = "Extreme Accident Damage without Jitter")
+par(mfrow = c(1,1))
+```
+
+# Conditioning on categorical variables
+
+# on Cause
+
+```{r}
+xyplot(ACCDMG~TRNSPD | Cause, main = "Extreme Damage vs. Train Speed Conditioned on Cause", xlab = "Train Speed", ylab = "Total Accident Damage", data = xdmg)
+```
+
+
+
+# Repeat the above extreme point analysis but use TOTINJ + TOTKLD
+# But wait until we do more cleaning
+
+#***********************************************************
+#			Heatmaps for categorical variabels
+#***********************************************************
+
+```{r}
+table(xdmg$Cause, xdmg$TYPE)
+
+heatmap(table(xdmg$Cause, xdmg$TYPE), Rowv = NA, Colv = NA)
+```
+
+
+# With legend (optional)
+
+```{r}
+library(gplots)
+
+heatmap.2(table(xdmg$Cause, xdmg$TYPE), Rowv = F, Colv = F)
+
+source("http://www.phaget4.org/R/myImagePlot.R")
+
+myImagePlot(table(xdmg$Cause, xdmg$TYPE), title = "No. of Accidents by Cause and Type of Accident")
+```
+
+#***********************************************************
+#			Data Cleaning
+#***********************************************************
+
+# Let's look at the most extreme cost accidents. Are there any of particular interest?
+
+```{r}
+which(xdmg$ACCDMG > 15e6)
+```
+
+
+
+# Duplicates?
+
+# The max
+
+```{r}
+which(xdmg$ACCDMG == max(xdmg$ACCDMG))
+```
+
+
+
+# Look at the narrative
+
+```{r}
+as.matrix(names(xdmg))
+
+xdmg[which(xdmg$ACCDMG == max(xdmg$ACCDMG)), 122:136]
+```
+
+
+
+# Are there other duplicates?
+
+```{r}
+duplicated(xdmg[1:100, c("YEAR", "MONTH", "DAY", "TIMEHR", "TIMEMIN")])
+```
+
+
+
+
+# What about longitude and latitude?
+
+# what about incident number?
+
+```{r}
+which(xdmg$INCDTNO == "110058")
+
+xdmg[which(xdmg$INCDTNO == "110058"),  c("YEAR", "MONTH", "DAY", "TIMEHR", "TIMEMIN")]
+
+duplicated(xdmg[, c("INCDTNO", "YEAR", "MONTH", "DAY", "TIMEHR", "TIMEMIN")])
+
+# Not duplicated
+
+!(duplicated(xdmg[, c("INCDTNO", "YEAR", "MONTH", "DAY", "TIMEHR", "TIMEMIN")]))
+```
+
+
+
+
+
+#remove the duplicates
+
+```{r}
+xdmgnd <- xdmg[!(duplicated(xdmg[, c("INCDTNO", "YEAR", "MONTH", "DAY", "TIMEHR", "TIMEMIN")])),]
+
+dim(xdmg)
+dim(xdmgnd)
+```
+
+
+
+# number of duplicates
+
+```{r}
+nrow(xdmg) - nrow(xdmgnd)
+```
+
+
+
