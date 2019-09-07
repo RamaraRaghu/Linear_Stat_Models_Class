@@ -1,0 +1,717 @@
+---
+title: "Project 3"
+author: "Matt Gummersbach, Chapman Monroe, Ted O'Rourke, Rakshith Raghu"
+date: "November 28th, 2018"
+output:
+#  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+require("knitr")
+sourcedir <- "~/Dropbox/4th Year/1st Semester/SYS 4021 - LSM/In Class Exercises/Intro to R"
+datadir <- "~/Dropbox/4th Year/1st Semester/SYS 4021 - LSM/In Class Exercises/Data/AirQuality"
+opts_knit$set(root.dir = sourcedir)
+library(forecast)
+library(mtsdi)
+library(MTS)
+```
+
+# Load data and impute missing values
+```{r cars}
+setwd(datadir)
+
+airquality = read.csv('AirQualityUCI.csv')
+
+# replace -200 with NA
+airquality[airquality == -200] <- NA
+
+# convert integer type to numeric
+intcols = c(4,5,7,8,9,10,11,12)
+for(i in 1:length(intcols)){
+  airquality[,intcols[i]] <- as.numeric(airquality[,intcols[i]])
+}
+
+setwd(sourcedir)
+
+# create new data frame with just CO, C6H6 and NO2
+AQdata = airquality[,c(3,6,10)]
+
+# impute missing air quality data
+f <- ~ CO.GT. + C6H6.GT. + NO2.GT.
+t <- c(seq(1,dim(AQdata)[1],1))
+i <- mnimput(f, AQdata, eps=1e-3, ts=TRUE, method='gam', ga.control=list(formula=paste(names(AQdata)[c(1:3)],'~ns(t,2)')))
+
+# set airquality to imputed data
+AQdata <- i$filled.dataset
+
+# aggregate to daily maxima for model building
+dailyAQ <- aggregate(AQdata, by=list(as.Date(airquality[,1],"%m/%d/%Y")), FUN=max)
+
+#Rename columns
+colnames(dailyAQ)[1] <- "Date"
+colnames(dailyAQ)[2] <- "CO"
+colnames(dailyAQ)[3] <- "C6H6"
+colnames(dailyAQ)[4] <- "NO2"
+
+```
+
+# Part 1: Building Univariate Time Series Models
+## a. Model Trends
+We begin by building univariate time series models for each pollutant
+```{r Uni Ts}
+co.ts <- ts(dailyAQ$CO)
+c6h6.ts <- ts(dailyAQ$C6H6)
+no2.ts <- ts(dailyAQ$NO2)
+```
+
+Next we plot these time series for each pollutant.
+```{r Uni Ts Plots}
+plot(co.ts^L1)
+plot(c6h6.ts)
+plot(no2.ts)
+```
+
+Next, we model the trend for each pollutant.
+```{r Uni Ts Trend}
+time.co<-c(1:(length(co.ts)))
+time.c6h6 <- c(1:(length(c6h6.ts)))
+time.no2 <- c(1:(length(no2.ts)))
+
+co.trend<-lm(co.ts~time.co)
+c6h6.trend<-lm(c6h6.ts~time.c6h6)
+no2.trend<-lm(no2.ts~time.no2)
+```
+
+To examine these trends, we first plot the trend on top of the original time series plot:
+```{r Trend Plot}
+plot(co.ts)
+abline(co.trend,col='red')
+
+plot(c6h6.ts)
+abline(c6h6.trend,col='red')
+
+plot(no2.ts)
+abline(no2.trend,col='red')
+```
+
+Next, we summarize the modeled Trend to investigate the signifiance of the trend in explaining the variability of each time series.
+```{r Trend Significance}
+summary(co.trend)
+summary(c6h6.trend)
+summary(no2.trend)
+```
+Examining this output, we see that the Trend is only significant at the 0.05 level for NO2.  This aligns with what we saw in the earlier Trend and Time Series plots.
+
+##b. Seasonal and Cyclical Components
+We first address cyclicality.  To do so, we return to the trend plots we have already generated.
+```{r Trend Plot 3}
+plot(co.ts)
+abline(co.trend,col='red')
+
+plot(c6h6.ts)
+abline(c6h6.trend,col='red')
+
+plot(no2.ts)
+abline(no2.trend,col='red')
+```
+Examining these plots, we see some evidence of weak cylcicality among each of the pollutants. Each graph undergoes longterm cycles of approximately 200 days.  However, given the short length of the data collected (<1 year), it is difficult to draw conclusions around cyclicality.
+
+Next, we turn to seasonlity.  We begin out investigation by examining the ACF plots.
+```{r ACF}
+acf(co.ts)
+acf(c6h6.ts)
+acf(no2.ts)
+```
+Looking at these graphs, we see clear evidence of seasonlity for each of the pollutants. 
+
+Additionally, the plots of CO and C6H6 exhibit sinusoidal behavior.  This indicates an arima model may be advantageous over a linear model.
+
+Furthermore, the linear decay in ACF values for NO2 suggests regressing on time may be necessary for this pollutant.
+
+Now, let's examine the PACF graphs:
+```{r PACF}
+pacf(co.ts)
+pacf(c6h6.ts)
+pacf(no2.ts)
+```
+Examining these plots, we see there is still seasonality for each pollutant, even after the PACF removes the correlation from one lag to the next.  Additionally, each pollutant now displays sinusoidal behavior in their PACFs, again indicating an arima model may be advantageous.
+
+To get a better look, we plot the ACF and PACF side-by-side for each pollutant:
+
+```{r ACF PACF}
+par(mfrow=c(1,2))
+acf(co.ts)
+pacf(co.ts)
+par(mfrow=c(1,1))
+
+par(mfrow=c(1,2))
+acf(c6h6.ts)
+pacf(c6h6.ts)
+par(mfrow=c(1,1))
+
+par(mfrow=c(1,2))
+acf(no2.ts)
+pacf(no2.ts)
+par(mfrow=c(1,1))
+```
+
+Next, we further investigate seasonality for each pollutant by analyzing the periodogram.  
+
+We start with CO.  To begin, we create a periodogram and find its peak.
+```{r CO periodogram}
+# Get the periodogram for co.ts
+pg.co <- spec.pgram(co.ts,spans=9,demean=T,log='no')
+
+# Find the peak, max.omega.co
+max.omega.co<-pg.co$freq[which(pg.co$spec==max(pg.co$spec))]
+
+# Where is the peak?
+max.omega.co
+```
+This peak is not the relevant local maximum, so instead we will look at a list of maxima.
+
+```{r CO list of maxima}
+sorted.omegas <- sort(pg.co$spec, decreasing=T, index.return=T)
+sorted.Ts <- 1/pg.co$freq[sorted.omegas$ix]
+sorted.Ts[1:20]
+```
+Reading this list, we identify a seasonal component of ~7 days.
+
+To capture this seasonality, we create a day variable.
+```{r Day variable}
+#March 10, 2004, Wednesday is first day of time series
+Day <- rep(NA, length(co.ts))
+Day[which((time.co %% 7)    == 1)] <- "W"  
+Day[which((time.co %% 7)    == 2)] <- "Th"
+Day[which((time.co %% 7)    == 3)] <- "F"
+Day[which((time.co %% 7)    == 4)] <- "Sa"
+Day[which((time.co %% 7)    == 5)] <- "Su"
+Day[which((time.co %% 7)    == 6)] <- "M"
+Day[which((time.co %% 7)    == 0)] <- "Tu"
+Day <- as.factor(Day)
+```
+
+To model this seasonality, we introduce the new Day variable into the Time Series model.
+```{r CO Day model}
+#Model CO with dummy variables for day
+co.trendseason<-lm(co.ts~time.co + Day)
+summary(co.trendseason)
+```
+
+Additionally, we can also model CO with day variable, time and trigonometric terms, which also account for Cyclicality.
+```{r CO Day Time Trig Model}
+co.trendseason2<-lm(co.ts~time.co+ Day+cos(2*pi*time.co/365)+sin(2*pi*time.co/365))
+summary(co.trendseason2)
+```
+
+Next, we repeat this seasonality analysis for C6H6. To begin, we create a periodogram and find its peak.
+```{r C6H6 periodogram}
+# Get the periodogram for co.ts
+pg.c6h6 <- spec.pgram(c6h6.ts,spans=9,demean=T,log='no')
+
+# Find the peak, max.omega.co
+max.omega.c6h6<-pg.c6h6$freq[which(pg.c6h6$spec==max(pg.c6h6$spec))]
+
+# Where is the peak?
+max.omega.c6h6
+```
+This peak is not the relevant local maximum, so instead we will look at a list of maxima.
+
+```{r C6H6 list of maxima}
+sorted.omegas.c6h6 <- sort(pg.c6h6$spec, decreasing=T, index.return=T)
+sorted.Ts.c6h6 <- 1/pg.c6h6$freq[sorted.omegas$ix]
+sorted.Ts.c6h6[1:20]
+```
+Reading this list, we again identify a seasonal component of ~7 days.  
+
+We can use the same Day variable created during the CO analysis to capture this seasonality.  Let's create a new model that does exactly that:
+```{r C6H6 Day model}
+#Model CO with dummy variables for day
+c6h6.trendseason<-lm(c6h6.ts~time.c6h6+Day)
+summary(c6h6.trendseason)
+```
+
+Additionally, we can also model C6H6 with day variable, time and trigonometric terms, which account for Cyclicality.
+```{r C6H6 Day Time Trig Model}
+c6h6.trendseason2<-lm(c6h6.ts~time.c6h6+ Day+cos(2*pi*time.c6h6/365)+sin(2*pi*time.c6h6/365))
+summary(c6h6.trendseason2)
+```
+
+Next, we repeat this seasonality analysis for NO2. To begin, we create a periodogram and find its peak.
+```{r NO2 periodogram}
+# Get the periodogram for precip.ts
+pg.no2 <- spec.pgram(no2.ts,spans=9,demean=T,log='no')
+
+# Find the peak, max.omega.precip
+max.omega.no2<-pg.no2$freq[which(pg.no2$spec==max(pg.no2$spec))]
+
+# Where is the peak?
+max.omega.no2
+```
+This peak is not the relevant local maximum, so instead we will look at a list of maxima.
+
+```{r NO2 list of maxima}
+sorted.omegas.no2 <- sort(pg.no2$spec, decreasing=T, index.return=T)
+sorted.Ts.no2 <- 1/pg.no2$freq[sorted.omegas$ix]
+sorted.Ts.no2[1:20]
+```
+Reading this list, we again identify a seasonal component of ~7 days.  
+
+We can use the same Day variable created during the NO2 analysis to capture this seasonality.  Let's create a new model that does exactly that:
+```{r NO2 Day model}
+#Model CO with dummy variables for day
+no2.trendseason<-lm(no2.ts~time.no2+ Day)
+summary(no2.trendseason)
+```
+
+Additionally, we can also model CO with day variable, time and trigonometric terms, which also account for Cyclicality.
+```{r NO2 Day Time Trig Model}
+no2.trendseason2<-lm(no2.ts~time.no2+ Day+cos(2*pi*time.no2/365)+sin(2*pi*time.no2/365))
+summary(no2.trendseason2)
+```
+
+## c. Determinig Auto-Regressing and Moving Average Components
+
+For each pollutant, we decided to also build ARIMA models using the auto.arima function.  This function optimizes the p, q, and d terms in an ARIMA model in order to minimize the model's AIC.  
+First, we do so for CO:
+```{r CO auto.ARIMA}
+co.arima <- auto.arima(co.ts)
+summary(co.arima)
+```
+
+Next, we do so for C6H6:
+```{r C6H6 auto.ARIMA}
+c6h6.arima <- auto.arima(c6h6.ts)
+summary(c6h6.arima)
+```
+
+Finally, we do so for NO2:
+```{r NO2 auto.ARIMA}
+no2.arima <- auto.arima(no2.ts)
+summary(no2.arima)
+```
+
+It is important to note that auto.arima chooses the parameters that optimize AIC values.  There are other metrics of model performance that can be considered, including BIC.  However, when assessing our models, we have chosen to prioritize AIC over BIC, so the auto.arima function makes sense for selecting parameters.
+
+We will expand on the modelling of ma and ar components on residuals in part 3, after we have chosen in part 1.d which models we believe are superior and have to be transformed/modified before predictions can occur. We will run arima functions on the residuals of these chosen functions at that point.
+
+## d. Assessing Models
+At this point, we have three time series models created for each of the three pollutants: timeseries (a linear model that incorporates Day for seasonality), timeseries2 (a linear model that incorporates Day, Time, and Trigonometric terms for seasonality and cyclicality), and arima (an optimized auto.arima model).
+
+At this point, we will turn to Adjusted R^2, AIC, BIC, and visual diagnostics to select the most effective model for each pollutant.
+
+We begin with CO.  First, we look at the Adjustd R^2 for the two linear models:
+```{r CO R^2}
+summary(co.trendseason)
+summary(co.trendseason2)
+```
+Examining this output, we see that the trendseason2 model has the highest Adjusted R^2 value (0.2872).  This means that this model explains a greater amount of variance in the timeseries of CO than the trendseason model.
+
+Next, we turn to AIC to compare all three models:
+```{r CO AIC}
+AIC(co.trendseason)
+AIC(co.arima)
+AIC(co.trendseason2)
+```
+Examinig this output, we see that trendseason2 has the lowest AIC score.  This means it is again the preferred model.
+
+Finally, we turn to BIC to compare all three models:
+```{r CO BIC}
+BIC(co.trendseason)
+BIC(co.arima)
+BIC(co.trendseason2)
+```
+Examining this output, we see that the arima model has the lowest BIC score, rather than the trendseason2 model.  Still, our group has determined that we will prioritize AIC score in model assessment, so we will maintain the trendseason2 as the preferred model.
+
+We therefore took this trendseason2 model and ran visual diagnostics on it. 
+```{r}
+par(mfrow=c(2,2))
+plot(co.trendseason2)
+par(mfrow=c(1,1))
+```
+Two issues pop up immediately. First is that heteroscedasticity is occurring as the residual spread "spreads" out as fitted values increase. The second problem is that there might be problems with the normality of the residuals. 
+
+To deal with these issues, we used the boxcox to transform the output:
+```{r}
+library(MASS)
+boxcox(co.trendseason2)
+L1 <- boxcox(co.trendseason2, plotit = F)$x[which.max(boxcox(co.trendseason2, plotit = F)$y)]
+co.trendseason2.transformed <- lm(co.ts^L1~time.co+ Day+cos(2*pi*time.co/365)+sin(2*pi*time.co/365))
+summary(co.trendseason2.transformed)
+AIC(co.trendseason2.transformed)
+```
+
+We then ran the visual diagnostics on this transformed model:
+```{r}
+par(mfrow=c(2,2))
+plot(co.trendseason2.transformed)
+par(mfrow=c(1,1))
+```
+
+The slope of hte scale-location plot is reduced, and the heteroscedasticity of the upper residuals spread is reduced. But there are still issues with heteroscedasticity on the lower residuals. The QQ plot shows a greater
+problem with the normality of the residuals. To correct that, we added in cos(4*) and sin(4*) terms:
+
+```{r}
+co.trendseason2.transformed.trig <- lm(co.ts^L1~time.co+ Day+cos(2*pi*time.co/365)+sin(2*pi*time.co/365) + cos(4*pi*time.co/365)+sin(4*pi*time.co/365))
+summary(co.trendseason2.transformed.trig)
+```
+
+We also run the visual diagnostics for this transformed model:
+
+```{r}
+par(mfrow=c(2,2))
+plot(co.trendseason2.transformed.trig)
+par(mfrow=c(1,1))
+```
+
+The normality of the residuals appears to be improved, while the heteroscedasticity of the model is still a problem. We end up choosing this transformation of the model due to it having the least heteroscedasticity and most normality of the residuals. The residual vs. fitted values plot appears to show no autocorrelation, but we run the acf and pacf on the residuals to confirm:
+
+```{r}
+acf(co.trendseason2.transformed.trig$residuals)
+pacf(co.trendseason2.transformed.trig$residuals)
+```
+
+While there is a somewhat exponential decline in the ACF, there appears no reasonable sinosoudal pattern for the PACF. The PACF also does not directly cut off at the lag where the exponential decline in the ACF ends (and goes negative). In fact it continues to breach the dotted line at several lags. We feel, based on the residual vs. fitted plot and the PACF plot, there is not enough justification to pursue AR or MA modelling for the time series itself above the transformed model. We will still use an automatic arima function to model the residuals
+of this transformed model in part 3.
+
+We now repeat this analysis for C6H6.  First, we look at the Adjustd R^2 for the two linear models:
+```{r C6H6 R^2}
+summary(c6h6.trendseason)
+summary(c6h6.trendseason2)
+```
+Examining this output, we see that the trendseason2 model has the highest Adjusted R^2 value (0.2979).  This means that this model explains a greater amount of variance in the timeseries of C6H6 than the trendseason model.
+
+Next, we turn to AIC to compare all three models:
+```{r C6H6 AIC}
+AIC(c6h6.trendseason)
+AIC(c6h6.arima)
+AIC(c6h6.trendseason2)
+```
+Examinig this output, we see that trendseason2 has the lowest AIC score.  This means it is again the preferred model.
+
+Finally, we turn to BIC to compare all three models:
+```{r C6H6 BIC}
+BIC(c6h6.trendseason)
+BIC(c6h6.arima)
+BIC(c6h6.trendseason2)
+```
+Examining this output, we see that the arima model again has the lowest BIC score, rather than the trendseason2 model.  Still, our group has determined that we will prioritize AIC score in model assessment, so we will maintain the trendseason2 as the preferred model.
+
+We run the visual diagnostics on this preferred treandseason2 model:
+```{r}
+par(mfrow=c(2,2))
+plot(c6h6.trendseason2)
+par(mfrow=c(1,1))
+```
+  
+  We see problems with the residual vs. fitted plot and the scale-location plot. The first issue is that there is heteroscedasticity for residuals vs. fitted. The second is that there is a positive slope for scale-location where there should be no relationship. The third potential issue is that there might be an autocorrelation element to the residuals vs. fitted.
+
+We transformed the function using boxcox. We also inputted cos(4*) and sin(4*) terms into the model:
+
+```{r}
+boxcox(c6h6.trendseason2)
+L2 <- boxcox(c6h6.trendseason2, plotit = F)$x[which.max(boxcox(c6h6.trendseason2, plotit = F)$y)]
+c6h6.trendseason2.transformed.trig <- lm(c6h6.ts^L2~time.c6h6+ Day+cos(2*pi*time.c6h6/365)+sin(2*pi*time.c6h6/365) + cos(4*pi*time.c6h6/365)+sin(4*pi*time.c6h6/365))
+summary(c6h6.trendseason2.transformed.trig)
+
+```
+
+  We run the visual diagnostics again for the transformed model. We also run the ACF and PACF plots for the model to check if autocorrelation and/or moving averages is an issue.
+
+```{r}
+par(mfrow=c(2,2))
+plot(c6h6.trendseason2.transformed.trig)
+par(mfrow=c(1,1))
+
+acf(c6h6.trendseason2.transformed.trig$residuals)
+pacf(c6h6.trendseason2.transformed.trig$residuals)
+```
+
+  The transformation kept the normality of the residuals. The slope for scale-location is vastly improved. The residuals vs. fitted plot has vastly decreased heteroscedasticity. The changed plots also removed much of the visual justification for there being autocorrelated elements. The ACF does have an exponential decay up to the 5th lag. Though afterwards it takes a relationship that is neither exponential nor sinosodul. The PACF also appears to not have a sinosodul relationship. Finally, the PACF appears to cut off much later than the ACF decay ends. We feel that there is not enough justification to pursue AR or MA modelling for the time series itself above this trend/seasonality model. We will still use an automatic function to model residuals of the transformed model in part 3. 
+
+We now repeat this analysis for NO2  First, we look at the Adjustd R^2 for the two linear models:
+```{r NO2 R^2}
+summary(no2.trendseason)
+summary(no2.trendseason2)
+```
+Examining this output, we see that the trendseason2 model has the highest Adjusted R^2 value (0.4253).  This means that this model explains a greater amount of the variance in the timeseries of NO2 than the trendseason model.
+
+Next, we turn to AIC to compare all three models:
+```{r NO2 AIC}
+AIC(no2.trendseason)
+AIC(no2.arima)
+AIC(no2.trendseason2)
+```
+Examinig this output, we see that the auto.arima has the lowest AIC score.  This means it is  the preferred model.
+
+Finally, we turn to BIC to compare all three models:
+```{r NO2 BIC}
+BIC(no2.trendseason)
+BIC(no2.arima)
+BIC(no2.trendseason2)
+```
+Examining this output, we see that the auto.arima model has the lowest BIC score.  This further supports that the arima model should be the preferred model.
+
+To further confirm that ARIMA is the right approach, we will visualize the the ACF and PACF for the residuals of the linear trendseason2 model to see if they indicate that an ARIMA approach is necessary.
+
+```{r}
+acf(no2.trendseason2$residuals)
+pacf(no2.trendseason2$residuals)
+par(mfrow=c(2,2))
+plot(no2.trendseason2)
+par(mfrow=c(1,1))
+```
+
+  There is a definite exponential decay in the ACF plot that does not go negative till a sinosodul relationship forms beginning at lag 15. The PACF also immediately cuts out at the first lag, which adds to the argument. Finally, the diagnostic plots for the the trendseason2 model show definite signs of autocorrelation in the residual vs. fitted plot and the scale location plot. We take this as enough justification to model the AR/MA 
+terms correctly. Given that the arima model also produces the lowest AIC score, it is the model that will be selected. Finally, we make sure to check the ljung box statistics for the model(which chooses 1,1):
+
+```{r}
+tsdiag(no2.arima)
+```
+
+The Ljung-Box statistic is nonsignificant for 6 lags. We therefore fail to reject the null hypothesis up to 6 lags and conclude that the model is useful.  
+
+Due to difficulty in using this model for predictions, we decided to take the second best model, the trendseason2 model and transform it so as to use it for part 3. We transform the trendseason2 model using boxcox and by adding sin(4 x) and cos(4 x) terms:
+```{r}
+boxcox(no2.trendseason2)
+L3 <- boxcox(no2.trendseason2, plotit = F)$x[which.max(boxcox(no2.trendseason2, plotit = F)$y)]
+no2.trendseason2.transformed.trig<-lm(no2.ts^L3~time.no2+ Day+cos(2*pi*time.no2/365)+sin(2*pi*time.no2/365)+cos(4*pi*time.no2/365)+sin(4*pi*time.no2/365))
+```
+Since the boxcox was around 0, the predictand is transformed. We then check the diagnostics for the transformed model(and compare it to the diagnostics of the original model):
+
+```{r}
+par(mfrow=c(2,2))
+plot(no2.trendseason2)
+plot(no2.trendseason2.transformed.trig)
+par(mfrow=c(1,1))
+```
+
+The only improvement is in the normality of hte residuals. The residual vs. fitted plots and the scale-location plots continue to provide ample visual evidence that a lag exists giving justification for autocorrelation existing. These diagnostics thus continue show more evidence for the the arima model. Due to difficulty in actually using that model for predictions, We will use this transformed model for part 3 and model the autocorrelation using the residuals. For part 2, we will use the nontransformed residuals of the original trendeason2 model (we will actually do this for all three gases). This is because we do not need any assumptions for the predictors themselves, so the transformations and diagnostics used here are not necessary for part 2.
+
+
+
+
+## e. What problems remain in the selected models?
+
+### CO Model (co.trendseason2.transformed.trig)
+In the co.trendseason2.transformed.trig model, there is still an issue with heteroscedasticity for residuals. Getting rid of that issue would probably require further transformation of the predictor terms. 
+
+### C6H6 Model (C6H6.trendseason2.transformed.try)
+In the c6h6.trendseason2.transformed.trig model, there is still a slight relationship between standardized residuals and fitted values for the lower fitted values that must be corrected. Further transformation, maybe of the predictors would possibly need to occur to fix this issue.
+
+### NO2 Model (no2.arima)
+For the no2.arima model, the model only lasts up to 6 lags before the ljung box statistic becomes significant (ie model is no longer useful). Other models may be significant for a greater number of lags, which would indicate better model performace.  Still, we chose to stick with the no2.arima model due to its AIC score, BIC score, and its other strong visual diagnostics. We also had issues using this model for predictions in part 3. 
+
+# Part 2: Building Multivariate Time Series Models
+
+## a. Model Trends
+See Part 1a.  The trends for CO, C6H6, and NO2 remain the same.
+
+## b. Seasonal and Cyclical Components
+See Part 1a.  The seasonality and cyclicality for CO, C6H6, and NO2 remain the same.
+
+##c. Determining Auto-Regressive and Moving Average Components 
+Next, we create a VARMA model that predicts concentrations of all three pollutants (multivariate approach).
+
+To do this, we need to select the optimal parameters for the multivariate VARMA model.  To find these parameters, we create an AIC Matrix that stores AIC values from the VARMA models as we vary parameter p and parameter q.
+
+Each VARMA model will be built using a unique parameter combination and will be modeled from the residuals from the 3 previously established univariate models.
+
+We first create a dataframe of these residuals here:
+```{r All Residuals Variable}
+allResiduals <- data.frame(co.trendseason2$residuals, c6h6.trendseason2$residuals, no2.trendseason2$residuals)
+colnames(allResiduals) <- c("co","c6h6","no2")
+```
+
+Next, we create create the AIC matrix here:
+```{r AIC Matrix, cache=TRUE, warning=FALSE}
+AICmatrix <- matrix(NA, 3, 4)
+for(p in 1:3){
+  for(q in 0:3){
+    varma.model <- VARMACpp(allResiduals, p=p, q=q, include.mean=F)
+    AICmatrix[p,q+1] <- varma.model$aic
+  }
+}
+```
+
+Let's examine the AIC Matrix to determine the combination of parameters with the minimum AIC:
+```{r AIC Matrix examiniation}
+AICmatrix
+```
+Looking at this output, we see that AIC is minimized when p = BLANK and q = BLANK.  These are therefore the values we will use for our Auto-Regressive and Moving Average components.
+
+##d. Assessing Models
+
+With these optimal parameters in mind, we now create a multivariate VARMA model:
+
+SUBSTITUTE PARAMETERS HERE CURRENTLY
+
+```{r VARMA model}
+varma.model <- VARMACpp(allResiduals, p=1, q=2, include.mean=F)
+```
+
+Let's now run diagnostics on this model.
+```{r Diagnostics{}
+MTSdiag(varma.model)
+```
+
+Conclusions:
+  -In general, it appears that we do not have statistical significance beyond 20 for the 3x3 plots. We take this as a good sign for our model that auto and cross correlations are not significant at that many lags. 
+  -For the plot of cross correlaiton matrix of residuals at different lags(individual): Most of the plotted points are not statistically significant. We do take this as another good sign for the model as a whole. We do have 4 points that are significant though we do not know anyway of potentially modifying the model to deal with the 4 points.
+   -For the plot of cross correlaiton matrix of residuals at different lags(collective):It appears to not significant up to the 13 lag, which is better than our arima models for the individual data, most of which were only able to get up to 10-11 lags. Ideally we would like to be nonsignificant for over 20 lags which we were not able to achieve.
+   -For the plots of time series of the residuals for Tmin and Tmax:
+  -There does appear to be a change in period for no2 after 350. For the other 2 gases, there appears to be a change in period after time 170. These appear to be signs of a change in period that we cannot directly analyze. Otherwise, there appears to be no non-zero slope to each of these models as a whole. 
+  
+##e. What problems remain in the selected models?
+  -There are several points in the cross correlation matrix of the residuals that are statistically significant. We do not know how to transform the function itself to get rid of these signifcant points beyond changing the predictors themselves to other predictors (such as co.trendseason instead of co.trendseason2). We also did not get our preferred nonsignificance in the Ljung-Box statistic for lags (we preferred beyond 20). However, it was superior to the other VARMA models we attempted to create. We believe a transformation in predictand could potentially lead to higher lags being improved for the statistic. Finally there appear to be changes in period for the the time series of the residuals for each of the three gases. 2 of the gases had their change in period at nearly similar times. While this is not a direct issue of trend that we would be looking to find if there was a problem, we would like to see no changes in period. We believe a change in predictors could help deal with this issue.
+
+# Part 3: Simulating from Univariate and Multivariate Time Series Models
+
+First, we simulate one year of forecasts for each pollutant using the univariate models.
+
+To do so, we first create arima models for the residuals for each of our CO and C6H6 linear models (the NO2 model is already an arima model so can be simulated directly).
+```{r Model Residuals}
+e.co.lm <- auto.arima(co.trendseason2.transformed.trig$residuals)
+summary(e.co.lm)
+
+e.c6h6.lm <- auto.arima(c6h6.trendseason2.transformed.trig$residuals)
+summary(e.c6h6.lm)
+```
+
+Next, we check the correlation of these residuals.
+```{r Sim Correlations}
+Residuals <- data.frame(e.co.lm$residuals, e.c6h6.lm$residuals)
+colnames(Residuals) <- c("co","c6h6")
+cor(Residuals)
+```
+
+Now we simluate 1 year of CO and C6H6 residuals and see whether these residuals are correlated:
+```{r Sim Correlations Sim}
+e.co.sim <- arima.sim(n=365, list(ar=c(0.4067,0.0927)))
+e.c6h6.sim <- arima.sim(n=365, list(ar=c(0.2921), ma=c(0.1216,0.1996)))
+#e.no2.sim <- arima.sim(n=365, list(ar=c(), ma=c()))
+
+allSimulations <- data.frame(e.co.sim, e.c6h6.sim)
+colnames(allSimulations) <- c("co","c6h6")
+cor(allSimulations)
+```
+These low correlation values are satisfactory. 
+
+We will therefore proceed with the simulation.  For the CO and C6H6, we will add the simulated residuals to the predicted means.  For the arima NO2 model, we can simulate directly.
+```{r Simulation}
+next.year.time <- c(1:391)
+next.year.co <- data.frame(time.co = next.year.time)
+next.year.c6h6 <- data.frame(time.c6h6 = next.year.time)
+
+co.mean <- predict(co.trendseason2.transformed.trig, newdata=next.year.co)[1:365]
+c6h6.mean <- predict(c6h6.trendseason2.transformed.trig, newdata=next.year.c6h6)[1:365]
+
+co.sim <- e.co.sim + co.mean
+c6h6.sim <- e.c6h6.sim + c6h6.mean
+no2.sim <- arima.sim(n=365, list(ar=c(0.3710), ma=c(-0.7793, -0.1182)))
+```
+We now plot these simulations:
+```{r Simulation Plots}
+plot(co.sim, type='l', col='black')
+plot(c6h6.sim, col='black')
+plot(no2.sim, col='black')
+```
+
+Next, we construct the mulivariate simulation.
+
+```{r VARMA Model Creation}
+varma.model <- VARMACpp(allResiduals, p=1, q=2, include.mean=F)
+summary(varma.model)
+```
+
+```{r Multivariate Simulation}
+# simulate year of data from VARMA model
+varma.sim = VARMAsim(365,phi=varma.model$Phi,theta=varma.model$Theta,sigma=varma.model$Sigma)
+```
+Having constructed this simulation, we next compare the correlation of simulated residuals to actual residuals.
+
+```{r VARMa correlations}
+# Compare correlation of simulated residuals to actual residuals
+cor(varma.sim$series)
+cor(allResiduals)
+```
+These correlations are satisfactory.
+
+Next, we plot the simulations derived from this multivariate model.
+```{r Multivariate Plots}
+plot(varma.sim$series[,1], type='l', col='black', main = "CO VARMA Simulation")
+plot(varma.sim$series[,2],type='l', col='black', main = "C6H6 VARMA Simulation")
+plot(varma.sim$series[,3],type='l', col='black', main = "NO2 VARMA Simulation")
+```
+
+Having created these simluations, we will now assess each simluation's performance across four critera: ability to reproduce overall trends; ability to reproduce observed spectrum; ability to reproduce observed mean, variance, and autocorrelation structure; ability to reproduce observed cross-correlation.
+
+
+## a. Ability to reproduce overall trends
+
+##CODE USED TO UNTRANSFORM THE RESULTS
+```{r}
+
+##residuals with arima run on them. Since we chose the no2.arima model in part 1, we can use the residuals from it for e.no2.sim
+e.co.lm <- auto.arima(co.trendseason2.transformed.trig$residuals^(1/L1))
+e.c6h6.lm <- auto.arima(c6h6.trendseason2.transformed.trig$residuals^(1/L2))
+e.no2.lm <- auto.arima(no2.trendseason2.transformed.trig$residuals^(1/L3))
+
+e.lm <-auto.arima(no2.arima$residuals)
+
+#arima values for the sim
+summary(e.co.lm)
+summary(e.c6h6.lm)
+summary(no2.arima)
+summary(e.no2.lm)
+summary(e.lm)
+
+
+#simulation
+e.co.sim <- arima.sim(n=365, list(ar=c(-.6138), ma=c(0, 0))) 
+e.c6h6.sim <- arima.sim(n=365, list(ar=c(.1977,0.0646,0.005), ma=c(0,0))) -.1547
+e.no2.sim <- arima.sim(n=365, list(ar=c(.3710), ma=c(-.7793, -.1182)))
+
+#time frame
+next.yr.time <- c(1:(391))
+next.yr.co <- data.frame(time.co = next.yr.time)
+next.yr.c6h6 <- data.frame(time.co = next.yr.time)
+next.yr.no2 <- data.frame(time.co = next.yr.time)
+
+
+#getting means. Each untransformed by the (1/L) part
+co.mean <- (predict(co.trendseason2.transformed.trig, newdata=next.yr.co))^(1/L1)
+c6h6.mean <- (predict(c6h6.trendseason2.transformed.trig, newdata=next.yr.c6h6))^(1/L2)
+no2.mean <- predict(no2.trendseason2.transformed.trig, newdata=next.yr.no2)^(1/L3)
+co.mean <- co.mean[1:365]
+c6h6.mean <- c6h6.mean[1:365]
+no2.mean <- no2.mean[1:365]
+
+#adding mean + residual
+co.sim <-  e.co.sim + co.mean
+c6h6.sim <- e.c6h6.sim + (c6h6.mean)
+no2.sim <- e.no2.sim + no2.mean
+
+
+#plots
+plot(co.sim, type='l', col='black')
+lines(co.ts, col='red')
+plot(c6h6.sim, col='black')
+lines(c6h6.ts,col='red')
+plot(no2.sim, col='black')
+lines(no2.ts, col='red')
+```
+
+
+## b. Ability to reproduce observed spectrum
+
+## c. Ability to reproduce observed mean, variance, and autocorrelation structure
+
+## d. Ability to reproduce observed cross-correlation
+
+# BONUS
+
+For the bonus, we will compare the performance of our univariate and multivariate models on a forecast of the last week of daily values for each pollutant.
+
+
